@@ -76,6 +76,13 @@ pub struct HeadlessData {
     renderer: GlesRenderer,
     target: smithay::backend::renderer::gles::GlesTexture,
     size: Size<i32, smithay::utils::Buffer>,
+    /// Opt-in buffer age (`EC_HEADLESS_AGE=1`): render into the same target every
+    /// frame and report age 1, as a presented swapchain buffer does. Off by
+    /// default, so headless keeps its full-repaint frames.
+    age_one: bool,
+    /// The target holds the output of a previous frame (false before the first
+    /// frame and after a resize made a fresh target).
+    primed: bool,
 }
 
 impl super::Backend for HeadlessData {
@@ -402,6 +409,8 @@ fn boot(
         renderer,
         target,
         size: buffer_size,
+        age_one: std::env::var("EC_HEADLESS_AGE").is_ok_and(|v| v == "1"),
+        primed: false,
     }));
 
     let out = output.clone();
@@ -459,6 +468,7 @@ fn redraw(
                 Ok(t) => {
                     data.target = t;
                     data.size = want;
+                    data.primed = false;
                 }
                 Err(e) => {
                     tracing::error!(?e, "resize offscreen target");
@@ -625,6 +635,10 @@ fn redraw(
             &mut elements,
             0,
         );
+        // Age 0 unless the target still holds the last frame (EC_HEADLESS_AGE=1):
+        // then age 1, and only the damage since that frame is drawn, as on a
+        // presented swapchain buffer. Age 0 repaints the whole damaged region.
+        let age = if data.age_one && data.primed { 1 } else { 0 };
         let mut fb = match Bind::bind(renderer, &mut data.target) {
             Ok(fb) => fb,
             Err(e) => {
@@ -632,10 +646,11 @@ fn redraw(
                 return;
             }
         };
-        // Age 0: the target is never presented, so its previous contents carry
-        // no information and a full repaint of the damaged region is correct.
-        match damage_tracker.render_output(renderer, &mut fb, 0, &elements, CLEAR) {
-            Ok(r) => r.states,
+        match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
+            Ok(r) => {
+                data.primed = true;
+                r.states
+            }
             Err(e) => {
                 tracing::error!(?e, "render");
                 return;
