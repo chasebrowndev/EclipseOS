@@ -8,25 +8,28 @@
 //! progress service last sent (oldest first), so it has no `State` of its own.
 //! The cell shows the oldest job as a gauge: a rounded-square ring (the
 //! battery glance's) that fills clockwise round its perimeter from the top
-//! centre to the job's fraction, or, when the amount of work is unknown, a
-//! short soft sweep travelling round the same ring, which is not a percent. The label (cut to a width) and `+N` when
+//! centre to the job's fraction, or, when the amount of work is unknown and
+//! there is no estimate, a short soft sweep travelling round the same ring,
+//! which is not a percent. The label (cut to a width) and `+N` when
 //! there are more sit beside it. The cell carries no percent and no ETA text:
 //! the gauge is the reading. Clicking it opens the progress drawer, which lists
 //! every job with its exact percent, bar and ETA.
 //!
 //! Estimates never pose as exact. A job's ETA is written plainly when it was
 //! reported or measured (`2m 10s left`) and with a leading `~` when it is only
-//! the median of past runs (`~2m 10s left`). A job whose fraction is unknown
-//! stays indeterminate even when it has an estimate: the gauge is not driven
-//! from elapsed against the estimate, because a fill that creeps to the end
-//! would read as a percent the service does not have.
+//! the median of past runs (`~2m 10s left`). A job with no real fraction but a
+//! history ETA fills from an estimate, elapsed / (elapsed + remaining), held
+//! under 95% and never drawn backwards, the same fill as a real fraction; the
+//! drawer writes it `~40%`. A real fraction always wins; with neither, the
+//! sweep.
 //!
 //! Ledger: none. The gauge and the bar are the neutral ink. The strip already
 //! carries the one live yellow (the focused chip's label, a full battery), and
 //! a second one here would compete with it. In-flight work is state, but the
 //! strip has no room for a second yellow.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use ec_services::progress::{Eta, EtaBasis, Job};
 use iced::widget::{button, text, text::Wrapping, Column, Row, Space};
@@ -73,6 +76,70 @@ impl Face {
     }
 }
 
+/// An estimate never reads as done.
+const ESTIMATE_CAP: f32 = 0.95;
+
+/// How far a job is: measured by the source, estimated from history, or not
+/// known at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Reading {
+    Exact(f32),
+    Estimate(f32),
+    Unknown,
+}
+
+impl Reading {
+    /// The fill to draw, for the same gauge and bar either way.
+    fn fill(self) -> Option<f32> {
+        match self {
+            Reading::Exact(f) | Reading::Estimate(f) => Some(f),
+            Reading::Unknown => None,
+        }
+    }
+}
+
+/// An estimated fill for a job with no real fraction but a history ETA:
+/// `elapsed / (elapsed + remaining)`, clamped to `[0, 0.95]`. `None` for any
+/// other job, so a real fraction (or a reported or measured ETA) is never
+/// replaced.
+fn estimated_fraction(job: &Job, now: Instant) -> Option<f32> {
+    if job.fraction.is_some() {
+        return None;
+    }
+    let eta = job.eta.as_ref().filter(|e| e.basis == EtaBasis::History)?;
+    let elapsed = now.saturating_duration_since(job.started).as_secs_f32();
+    let total = elapsed + eta.remaining.as_secs_f32();
+    let f = if total > 0.0 { elapsed / total } else { 0.0 };
+    Some(f.clamp(0.0, ESTIMATE_CAP))
+}
+
+/// Raise each estimated job's high-water mark to `now`'s estimate and drop the
+/// marks of jobs that are gone. Called on every service update and frame.
+pub(crate) fn track(jobs: &[Job], marks: &mut HashMap<String, f32>, now: Instant) {
+    marks.retain(|id, _| jobs.iter().any(|j| j.id == *id));
+    for job in jobs {
+        if let Some(f) = estimated_fraction(job, now) {
+            let m = marks.entry(job.id.clone()).or_insert(0.0);
+            *m = m.max(f);
+        } else {
+            marks.remove(&job.id);
+        }
+    }
+}
+
+/// The reading to draw for a job now. The estimate is taken at the frame's
+/// own time and held at the job's mark, so it creeps between updates and
+/// never steps back.
+fn reading(job: &Job, marks: &HashMap<String, f32>, now: Instant) -> Reading {
+    if let Some(f) = job.fraction {
+        return Reading::Exact(f);
+    }
+    match estimated_fraction(job, now) {
+        Some(f) => Reading::Estimate(f.max(marks.get(&job.id).copied().unwrap_or(0.0))),
+        None => Reading::Unknown,
+    }
+}
+
 /// A fraction as the drawer writes it: `40%`, rounded.
 fn percent_text(fraction: f32) -> String {
     format!("{}%", (fraction.clamp(0.0, 1.0) * 100.0).round() as u32)
@@ -88,6 +155,16 @@ fn compact(d: Duration) -> String {
         format!("{}m {:02}s", secs / 60, secs % 60)
     } else {
         format!("{secs}s")
+    }
+}
+
+/// A reading as the drawer writes it: `40%`, or `~40%` for an estimate, and
+/// nothing when unknown.
+fn reading_text(r: Reading) -> String {
+    match r {
+        Reading::Exact(f) => percent_text(f),
+        Reading::Estimate(f) => format!("~{}", percent_text(f.min(ESTIMATE_CAP))),
+        Reading::Unknown => String::new(),
     }
 }
 
@@ -122,7 +199,7 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     let ink = frame.core_alpha();
     let job = &app.progress[0];
     let gauge = parts::progress_squircle(
-        job.fraction,
+        reading(job, &app.progress_marks, Instant::now()).fill(),
         app.progress_phase(),
         bar::PROGRESS_GAUGE,
         bar::PROGRESS_STROKE,
@@ -175,8 +252,10 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         return s;
     }
     let phase = app.progress_phase();
+    let now = Instant::now();
     for job in app.progress.iter().take(drawer::MAX_ROWS) {
-        s.block(job_row(job, phase), drawer::JOB_H);
+        let r = reading(job, &app.progress_marks, now);
+        s.block(job_row(job, r, phase), drawer::JOB_H);
     }
     let rest = app.progress.len().saturating_sub(drawer::MAX_ROWS);
     if rest > 0 {
@@ -185,13 +264,13 @@ pub(crate) fn sheet(app: &App) -> Sheet {
     s
 }
 
-/// One job's block: its label with the exact percent at the right (nothing
-/// when the amount is unknown), its bar (a soft sweep along the track when it is
+/// One job's block: its label with the percent at the right (`~` when
+/// estimated, nothing when the amount is unknown), its bar (a soft sweep along the track when it is
 /// unknown, so an unknown job never looks like an amount), and the ETA as a
 /// quiet mono line right-aligned under the bar. The line is always laid out,
 /// empty when there is no ETA, so every job is the same height.
-fn job_row(job: &Job, phase: f32) -> Element<'static, Message, Theme> {
-    let reading = job.fraction.map(percent_text).unwrap_or_default();
+fn job_row(job: &Job, reading: Reading, phase: f32) -> Element<'static, Message, Theme> {
+    let reading_label = reading_text(reading);
     let head = Row::new()
         .spacing(drawer::MARK_GAP)
         .align_y(Alignment::Center)
@@ -204,12 +283,12 @@ fn job_row(job: &Job, phase: f32) -> Element<'static, Message, Theme> {
                 .width(Length::Fill),
         )
         .push(
-            text(reading)
+            text(reading_label)
                 .font(font::DATA)
                 .size(size::MONO)
                 .color(color::text()),
         );
-    let bar: Element<'static, Message, Theme> = match job.fraction {
+    let bar: Element<'static, Message, Theme> = match reading.fill() {
         Some(f) => parts::progress_bar(f, color::text()),
         None => parts::progress_sweep_bar(phase, color::text()),
     };
@@ -337,6 +416,67 @@ mod tests {
         assert_eq!(eta_text(&eta(45, EtaBasis::Reported)), "45s left");
         assert!(!approximate(&eta(45, EtaBasis::Reported)));
         assert!(!approximate(&eta(45, EtaBasis::Rate)));
+    }
+
+    fn at(j: &Job, secs: u64) -> Instant {
+        j.started + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn an_estimate_needs_no_fraction_and_a_history_eta() {
+        let mut j = job("a", "cargo", None);
+        assert_eq!(estimated_fraction(&j, at(&j, 60)), None);
+        j.eta = Some(eta(60, EtaBasis::Rate));
+        assert_eq!(estimated_fraction(&j, at(&j, 60)), None);
+        j.eta = Some(eta(60, EtaBasis::History));
+        assert_eq!(estimated_fraction(&j, at(&j, 60)), Some(0.5));
+        j.fraction = Some(0.9);
+        assert_eq!(estimated_fraction(&j, at(&j, 60)), None);
+    }
+
+    #[test]
+    fn an_estimate_is_held_under_done() {
+        let mut j = job("a", "cargo", None);
+        j.eta = Some(eta(0, EtaBasis::History));
+        assert_eq!(estimated_fraction(&j, at(&j, 600)), Some(ESTIMATE_CAP));
+    }
+
+    #[test]
+    fn a_real_fraction_wins_and_is_not_altered() {
+        let mut j = job("a", "cp", Some(0.4));
+        j.eta = Some(eta(60, EtaBasis::History));
+        let marks = HashMap::from([("a".to_owned(), 0.9)]);
+        assert_eq!(reading(&j, &marks, at(&j, 60)), Reading::Exact(0.4));
+    }
+
+    #[test]
+    fn no_estimate_means_the_sweep() {
+        let j = job("a", "cargo", None);
+        assert_eq!(reading(&j, &HashMap::new(), at(&j, 5)).fill(), None);
+    }
+
+    #[test]
+    fn the_mark_never_goes_backwards_and_resets_with_the_job() {
+        let mut j = job("a", "cargo", None);
+        j.eta = Some(eta(60, EtaBasis::History));
+        let mut marks = HashMap::new();
+        track(std::slice::from_ref(&j), &mut marks, at(&j, 60));
+        assert_eq!(marks["a"], 0.5);
+        // A fresh update with a longer ETA would estimate lower.
+        j.eta = Some(eta(600, EtaBasis::History));
+        track(std::slice::from_ref(&j), &mut marks, at(&j, 60));
+        assert_eq!(marks["a"], 0.5);
+        assert_eq!(reading(&j, &marks, at(&j, 60)), Reading::Estimate(0.5));
+        track(&[], &mut marks, at(&j, 61));
+        assert!(marks.is_empty());
+    }
+
+    #[test]
+    fn an_estimate_is_written_with_a_tilde() {
+        assert_eq!(reading_text(Reading::Exact(0.4)), "40%");
+        assert_eq!(reading_text(Reading::Estimate(0.4)), "~40%");
+        assert_eq!(reading_text(Reading::Estimate(1.0)), "~95%");
+        assert_eq!(reading_text(Reading::Unknown), "");
     }
 
     #[test]

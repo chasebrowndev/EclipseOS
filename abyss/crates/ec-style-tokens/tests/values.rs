@@ -192,7 +192,7 @@ fn moved_values_equal_the_old_literals() {
     assert_eq!(bar::PROGRESS_RING, 14.0);
     assert_eq!(bar::PROGRESS_LABEL_W, 96.0);
     assert_eq!(bar::PROGRESS_GAUGE, 22.0);
-    assert_eq!(bar::PROGRESS_STROKE, 2.25);
+    assert_eq!(bar::PROGRESS_STROKE, 2.5);
     assert_eq!(bar::VIZ_BANDS, 16);
     assert_eq!(bar::VIZ_BAR_W, 2.0);
     assert_eq!(bar::VIZ_GAP, 2.0);
@@ -376,7 +376,7 @@ fn moved_values_equal_the_old_literals() {
     assert_eq!(drawer::TILE_GAP, 4.0);
     assert_eq!(drawer::JOB_H, 42.0);
     assert_eq!(drawer::GAUGE_CORNER, 0.30);
-    assert_eq!(drawer::GAUGE_REST, 0.55);
+    assert_eq!(drawer::GAUGE_REST, 0.36);
     assert_eq!(drawer::SWEEP_STEPS, 3);
     assert_eq!(drawer::SWEEP_STEP, 0.07);
     assert_eq!(drawer::SWEEP_TAIL, 0.5);

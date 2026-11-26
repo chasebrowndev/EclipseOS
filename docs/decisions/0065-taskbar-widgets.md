@@ -256,9 +256,8 @@ estimate never reads as a measurement (ARCHITECTURE, "Progress feed").
 **The cell.** The gauge is a rounded-square ring, the Battery Glance's geometry
 (`ec-ui` `squircle_gauge`): a faint track, and a lit stroke that fills clockwise
 from the top centre for the fraction, round caps. When the amount is unknown, a
-short sweep (a leader and two fading steps) travels the same path; it is never
-read as a percent, and a job whose only estimate is from history stays
-indeterminate. The label and `+N` stay beside it; the cell carries no percent
+short sweep (a leader and two fading steps) travels the same path and is never
+read as a percent. The label and `+N` stay beside it; the cell carries no percent
 and no time. Ink is neutral and the unlit track is `text_tertiary` at
 `drawer::GAUGE_REST`, because a fraction of the primary ink glares on dark and
 vanishes on light. No accent: the strip already has its one yellow.
@@ -271,6 +270,15 @@ followed by `left`. An ETA from history is written `~2m 10s left`. The ETA line
 is always laid out so an ETA arriving does not move the list. Rows are not
 interactive and have no hover. The source (`feed` or `scan`) and the elapsed
 time are not shown.
+
+**Estimated fill** *(2026-11-26)*. The gauge and the bar fill in proportion to
+how far the job is, never as a buffering indicator. A job with no real fraction
+but a history ETA fills from an estimate, `elapsed / (elapsed + remaining)`,
+held under 95% and never drawn backwards (a per-job high-water mark), with the
+same fill as a real fraction and creeping with the frame clock between updates.
+The drawer writes it `~40%`; a real fraction stays `40%` and always wins. Only a
+job with neither real fraction nor estimate shows the sweep. `fraction: None`
+still means unknown in the service; the estimate lives in the bar.
 
 ## Amendment (2026-11-03): the power widget
 

@@ -492,6 +492,9 @@ pub struct App {
     /// Every job the progress service reports, oldest first. Empty means the
     /// progress cell is zero width and draws nothing.
     pub progress: Vec<ec_services::progress::Job>,
+    /// The highest estimated fill drawn per job id, so an estimate never goes
+    /// backwards. Dropped with the job.
+    pub progress_marks: HashMap<String, f32>,
     /// The power drawer's view: logind's answers, the pending Eclipse update and
     /// the apply in flight. Reset whenever the drawer closes.
     pub power_menu: crate::widgets::power::Menu,
@@ -949,6 +952,7 @@ impl App {
             power: crate::widgets::battery::Power::default(),
             quick_actions: crate::widgets::quick_actions::load(),
             progress: Vec::new(),
+            progress_marks: HashMap::new(),
             power_menu: crate::widgets::power::Menu::default(),
             fixture: None,
             show_key_hints: true,
@@ -1058,6 +1062,7 @@ fn preview(app: &mut App) {
         connected: 1,
     };
     app.progress = crate::preview::preview_progress(if which == "progress" { "several" } else { "none" });
+    crate::widgets::progress::track(&app.progress, &mut app.progress_marks, Instant::now());
     if which == "power" {
         crate::widgets::power::preview(&mut app.power_menu);
     }
@@ -2449,6 +2454,7 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
         Message::Progress(jobs) => {
             let idle = jobs.is_empty();
             app.progress = jobs;
+            crate::widgets::progress::track(&app.progress, &mut app.progress_marks, Instant::now());
             // The drawer hangs from the cell, which is gone with the last job:
             // it closes with it rather than hanging from nothing.
             let closing = if idle {
@@ -2595,6 +2601,7 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
         }
         Message::Frame => {
             let now = Instant::now();
+            crate::widgets::progress::track(&app.progress, &mut app.progress_marks, now);
             let mut sized = Vec::new();
             let hints = app.show_key_hints;
             for bar in app.bars.values_mut() {

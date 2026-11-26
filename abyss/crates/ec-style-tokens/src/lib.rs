@@ -525,7 +525,7 @@ pub mod bar {
     /// the ring as the cell's face; the ring stays the spinner of the power
     /// widget and of the drawers that wait on a radio.
     pub const PROGRESS_GAUGE: f32 = 22.0;
-    pub const PROGRESS_STROKE: f32 = 2.25;
+    pub const PROGRESS_STROKE: f32 = 2.5;
 
     /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
     /// mirrored about the row's midline.
@@ -1006,8 +1006,9 @@ pub mod drawer {
     pub const GAUGE_CORNER: f32 = 0.30;
     /// How much of the palette's tertiary ink a gauge's unlit track keeps.
     /// Tertiary ink is tuned per scheme; a fraction of the primary ink is not
-    /// (in linear light it glares on dark and vanishes on light).
-    pub const GAUGE_REST: f32 = 0.55;
+    /// (in linear light it glares on dark and vanishes on light). Kept dim so the lit arc
+    /// reads as a fill against it at 1x.
+    pub const GAUGE_REST: f32 = 0.36;
     /// The soft sweep of an unknown amount: this many steps, each this share
     /// of the perimeter long, the last keeping [`SWEEP_TAIL`] of the ink and
     /// the ones between stepping evenly down to it.
