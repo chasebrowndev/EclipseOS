@@ -56,7 +56,7 @@ pub(crate) fn preview_battery() -> Battery {
     }
 }
 
-/// `HYPERION_PREVIEW_PROGRESS=none|one|rate|reported|indeterminate|history|long|several|many`
+/// `HYPERION_PREVIEW_PROGRESS=none|one|zero|ninety|rate|reported|indeterminate|history|states|long|several|many`
 /// picks the progress fixture: no job, one determinate (without an ETA, with a
 /// measured one, with a reported one), one indeterminate (without an ETA, with
 /// an approximate one), a long label, three with the oldest determinate, or
@@ -85,6 +85,8 @@ pub(crate) fn preview_progress(default: &str) -> Vec<ec_services::progress::Job>
         };
     match which.as_str() {
         "one" => vec![job("demo", "Demo copy", Some(0.4), 72, Source::Feed, None)],
+        "zero" => vec![job("demo", "Demo copy", Some(0.0), 2, Source::Feed, None)],
+        "ninety" => vec![job("demo", "Demo copy", Some(0.9), 200, Source::Feed, None)],
         "rate" => vec![job(
             "demo",
             "Demo copy",
@@ -106,7 +108,7 @@ pub(crate) fn preview_progress(default: &str) -> Vec<ec_services::progress::Job>
             "make",
             "cargo build",
             None,
-            14,
+            87,
             Source::Scan,
             eta(130, EtaBasis::History),
         )],
@@ -118,6 +120,26 @@ pub(crate) fn preview_progress(default: &str) -> Vec<ec_services::progress::Job>
             Source::Feed,
             eta(3900, EtaBasis::Rate),
         )],
+        // Three states at once: real 40%, estimated ~40%, no estimate (sweep).
+        "states" => vec![
+            job(
+                "demo",
+                "Demo copy",
+                Some(0.4),
+                72,
+                Source::Feed,
+                eta(130, EtaBasis::Rate),
+            ),
+            job(
+                "make",
+                "cargo build",
+                None,
+                87,
+                Source::Scan,
+                eta(130, EtaBasis::History),
+            ),
+            job("curl", "curl", None, 9, Source::Scan, None),
+        ],
         "several" => vec![
             job(
                 "demo",
