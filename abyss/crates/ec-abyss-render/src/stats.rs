@@ -7,7 +7,10 @@
 //! p50/p99 on a fixed interval so a regression shows up in the journal
 //! without a profiler attached.
 
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
+
+use crate::gpu_timer::{Span, SPAN_KINDS};
 
 /// Number of frames kept for the percentile window. At 144 Hz this is a
 /// little under four seconds of history, which comfortably covers the
@@ -15,6 +18,186 @@ use std::time::{Duration, Instant};
 const CAPACITY: usize = 1024;
 
 const REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// GPU frames kept for the per-frame percentile (as [`CAPACITY`]).
+const GPU_CAPACITY: usize = 1024;
+
+/// Backdrop rebuild reasons ([`Miss`]).
+const MISSES: usize = 7;
+
+/// Why a backdrop cache unit was rebuilt. The first that applies is kept, in
+/// this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Miss {
+    /// Never built: a new window, tier or layer.
+    First = 0,
+    /// The blur's passes or packing changed (a preset or tunable change).
+    Mode = 1,
+    /// The region moved or resized, or its crop, clamp or group membership changed.
+    Geometry = 2,
+    /// Damage in a group's margin: inside its built region, outside every
+    /// member's own crop.
+    Margin = 3,
+    /// Damage within the kernel radius of the region.
+    Kernel = 4,
+    /// Damage reached only by the glass refraction reach, beyond the kernel.
+    Refraction = 5,
+    /// No new damage: a throttled rebuild flushed from an earlier frame.
+    Defer = 6,
+}
+
+/// How one backdrop cache unit (a window's, or a tier's) was served in a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Served {
+    /// Clean cache: no rebuild.
+    Hit,
+    /// Dirty, but held back by the crowded-store throttle: served stale.
+    Held,
+    /// Rebuild requested, but nothing the blur samples changed: no blits.
+    Idle,
+    /// Rebuilt.
+    Miss(Miss),
+}
+
+/// A GPU timer frame that did not contribute to the figures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuLoss {
+    /// Not ready in time and dropped unread.
+    Lost,
+    /// Discarded for `GPU_DISJOINT`.
+    Disjoint,
+    /// A span that was not timed (ring full, or one already open).
+    Skipped,
+}
+
+/// Glass counters and GPU stage sums for one report interval (`--stats`).
+#[derive(Clone, Copy)]
+struct Glass {
+    /// Backdrop units served clean.
+    hits: u64,
+    /// Units held back by the crowded throttle.
+    held: u64,
+    /// Units rebuild-requested that changed nothing the blur samples.
+    idle: u64,
+    /// Rebuilt units, by [`Miss`].
+    misses: [u64; MISSES],
+    /// Blur-backed elements produced (drawn).
+    surfaces: u64,
+    /// Backdrop texels blurred (the crop, or the damage of a partial rebuild).
+    backdrop_px: u64,
+    /// Texels the blit passes wrote, summed over the passes.
+    pass_px: u64,
+    /// GPU frames read back.
+    gpu_frames: u64,
+    /// GPU nanoseconds per stage, summed over those frames.
+    gpu_sum_ns: [u64; SPAN_KINDS],
+    /// Per-frame GPU microseconds: the fixed ring the percentiles come from.
+    gpu_total_us: [u32; GPU_CAPACITY],
+    gpu_len: usize,
+    gpu_next: usize,
+    lost: u64,
+    disjoint: u64,
+    skipped: u64,
+}
+
+impl Glass {
+    const ZERO: Glass = Glass {
+        hits: 0,
+        held: 0,
+        idle: 0,
+        misses: [0; MISSES],
+        surfaces: 0,
+        backdrop_px: 0,
+        pass_px: 0,
+        gpu_frames: 0,
+        gpu_sum_ns: [0; SPAN_KINDS],
+        gpu_total_us: [0; GPU_CAPACITY],
+        gpu_len: 0,
+        gpu_next: 0,
+        lost: 0,
+        disjoint: 0,
+        skipped: 0,
+    };
+}
+
+thread_local! {
+    /// `--stats` is on. The one flag every glass hook reads first.
+    static GLASS_ON: Cell<bool> = const { Cell::new(false) };
+    static GLASS: RefCell<Glass> = const { RefCell::new(Glass::ZERO) };
+}
+
+/// Whether the glass counters and the GPU stage timers run, which is exactly
+/// when `--stats` is on ([`FrameStats::new`] sets it). Each hook reads this
+/// first, so without `--stats` a hook costs one thread-local read.
+pub fn glass_on() -> bool {
+    GLASS_ON.with(Cell::get)
+}
+
+/// Count one backdrop cache unit this frame. A no-op unless [`glass_on`].
+pub fn note_backdrop(served: Served) {
+    if !glass_on() {
+        return;
+    }
+    GLASS.with_borrow_mut(|g| match served {
+        Served::Hit => g.hits += 1,
+        Served::Held => g.held += 1,
+        Served::Idle => g.idle += 1,
+        Served::Miss(m) => g.misses[m as usize] += 1,
+    });
+}
+
+/// Count one blur-backed element drawn. A no-op unless [`glass_on`].
+pub fn note_surface() {
+    if glass_on() {
+        GLASS.with_borrow_mut(|g| g.surfaces += 1);
+    }
+}
+
+/// Count one backdrop rebuild: texels blurred and texels the passes wrote.
+/// A no-op unless [`glass_on`].
+pub fn note_rebuild(backdrop_px: u64, pass_px: u64) {
+    if glass_on() {
+        GLASS.with_borrow_mut(|g| {
+            g.backdrop_px += backdrop_px;
+            g.pass_px += pass_px;
+        });
+    }
+}
+
+/// One GPU timer frame read back: nanoseconds per stage. Allocation-free (it
+/// writes the fixed ring). A no-op unless [`glass_on`].
+pub fn note_gpu_frame(per_kind: &[u64; SPAN_KINDS]) {
+    if !glass_on() {
+        return;
+    }
+    GLASS.with_borrow_mut(|g| {
+        let total: u64 = per_kind.iter().sum();
+        g.gpu_frames += 1;
+        for (sum, ns) in g.gpu_sum_ns.iter_mut().zip(per_kind) {
+            *sum += ns;
+        }
+        g.gpu_total_us[g.gpu_next] = (total / 1000).min(u64::from(u32::MAX)) as u32;
+        g.gpu_next = (g.gpu_next + 1) % GPU_CAPACITY;
+        g.gpu_len = (g.gpu_len + 1).min(GPU_CAPACITY);
+    });
+}
+
+/// A GPU timer frame that was lost, discarded or not timed. A no-op unless
+/// [`glass_on`].
+pub fn note_gpu_loss(loss: GpuLoss) {
+    if glass_on() {
+        GLASS.with_borrow_mut(|g| match loss {
+            GpuLoss::Lost => g.lost += 1,
+            GpuLoss::Disjoint => g.disjoint += 1,
+            GpuLoss::Skipped => g.skipped += 1,
+        });
+    }
+}
+
+/// Take (and reset) the interval's glass counters.
+fn take_glass() -> Glass {
+    GLASS.with_borrow_mut(|g| std::mem::replace(g, Glass::ZERO))
+}
 
 /// A fixed-capacity ring of frame timings for one compositor.
 pub struct FrameStats {
@@ -37,6 +220,8 @@ pub struct FrameStats {
 
 impl FrameStats {
     pub fn new(enabled: bool) -> Self {
+        // `--stats` is the one switch for the glass instrumentation too.
+        GLASS_ON.with(|on| on.set(enabled));
         Self {
             enabled,
             render_us: Box::new([0; CAPACITY]),
@@ -94,6 +279,18 @@ impl FrameStats {
         render.sort_unstable();
         submit.sort_unstable();
         let fps = self.frames as f64 / elapsed.as_secs_f64();
+        // The glass figures (`--stats` only, so always present on this line):
+        // per composited frame, except GPU stage times, which are per GPU frame
+        // read back (the timers lag the frames by a few), and the loss counts,
+        // which are totals over the interval.
+        let g = take_glass();
+        let n = self.frames.max(1) as f64;
+        let gf = g.gpu_frames.max(1) as f64;
+        let per = |v: u64| v as f64 / n;
+        let stage = |k: Span| g.gpu_sum_ns[k as usize] as f64 / gf / 1000.0;
+        let mut gpu_total: Vec<u32> = g.gpu_total_us[..g.gpu_len].to_vec();
+        gpu_total.sort_unstable();
+        let gpu_sum_us = g.gpu_sum_ns.iter().sum::<u64>() as f64 / gf / 1000.0;
         tracing::info!(
             frames = self.frames,
             fps = format_args!("{fps:.1}"),
@@ -101,6 +298,35 @@ impl FrameStats {
             render_p99_us = pct(&render, 99),
             submit_p50_us = pct(&submit, 50),
             submit_p99_us = pct(&submit, 99),
+            gpu = crate::gpu_timer::mode_name(),
+            gpu_frames = g.gpu_frames,
+            gpu_backdrop_us = format_args!("{:.1}", stage(Span::Backdrop)),
+            gpu_down_us = format_args!("{:.1}", stage(Span::Down)),
+            gpu_up_us = format_args!("{:.1}", stage(Span::Up)),
+            gpu_pack_us = format_args!("{:.1}", stage(Span::Pack)),
+            gpu_blur_us = format_args!("{:.1}", stage(Span::FinalBlur)),
+            gpu_frost_us = format_args!("{:.1}", stage(Span::FinalFrost)),
+            gpu_glass_us = format_args!("{:.1}", stage(Span::FinalGlass)),
+            gpu_sum_us = format_args!("{gpu_sum_us:.1}"),
+            gpu_sum_p50_us = pct(&gpu_total, 50),
+            gpu_sum_p99_us = pct(&gpu_total, 99),
+            gpu_lost = g.lost,
+            gpu_disjoint = g.disjoint,
+            gpu_skipped = g.skipped,
+            blur_hit = format_args!("{:.2}", per(g.hits)),
+            blur_held = format_args!("{:.2}", per(g.held)),
+            blur_idle = format_args!("{:.2}", per(g.idle)),
+            blur_miss = format_args!("{:.2}", per(g.misses.iter().sum())),
+            blur_miss_first = format_args!("{:.2}", per(g.misses[Miss::First as usize])),
+            blur_miss_mode = format_args!("{:.2}", per(g.misses[Miss::Mode as usize])),
+            blur_miss_geom = format_args!("{:.2}", per(g.misses[Miss::Geometry as usize])),
+            blur_miss_margin = format_args!("{:.2}", per(g.misses[Miss::Margin as usize])),
+            blur_miss_kernel = format_args!("{:.2}", per(g.misses[Miss::Kernel as usize])),
+            blur_miss_refr = format_args!("{:.2}", per(g.misses[Miss::Refraction as usize])),
+            blur_miss_defer = format_args!("{:.2}", per(g.misses[Miss::Defer as usize])),
+            blur_surfaces = format_args!("{:.2}", per(g.surfaces)),
+            blur_px = format_args!("{:.0}", per(g.backdrop_px)),
+            blur_pass_px = format_args!("{:.0}", per(g.pass_px)),
             "frame stats"
         );
         self.frames = 0;
@@ -211,5 +437,36 @@ mod tests {
             s.record(Duration::from_micros(10), Duration::from_micros(1));
         }
         assert_eq!(s.len, CAPACITY);
+    }
+
+    #[test]
+    fn glass_counters_count_only_with_stats_and_reset_on_take() {
+        // Off (the default): every hook is a no-op.
+        note_backdrop(Served::Hit);
+        note_surface();
+        note_rebuild(100, 40);
+        assert_eq!(take_glass().hits, 0);
+        assert_eq!(take_glass().backdrop_px, 0);
+
+        // `--stats`: the figures fold into one interval, then reset.
+        GLASS_ON.with(|on| on.set(true));
+        note_backdrop(Served::Hit);
+        note_backdrop(Served::Held);
+        note_backdrop(Served::Idle);
+        note_backdrop(Served::Miss(Miss::Margin));
+        note_surface();
+        note_rebuild(100, 40);
+        note_gpu_frame(&[1000, 2000, 0, 0, 0, 0, 3000, 0, 0, 0]);
+        note_gpu_loss(GpuLoss::Skipped);
+        let g = take_glass();
+        assert_eq!((g.hits, g.held, g.idle), (1, 1, 1));
+        assert_eq!((g.misses[Miss::Margin as usize], g.surfaces), (1, 1));
+        assert_eq!((g.backdrop_px, g.pass_px), (100, 40));
+        assert_eq!((g.gpu_frames, g.skipped), (1, 1));
+        assert_eq!(g.gpu_sum_ns[Span::FinalGlass as usize], 3000);
+        assert_eq!(g.gpu_total_us[0], 6);
+        assert_eq!(g.gpu_len, 1);
+        assert_eq!(take_glass().hits, 0, "a take resets the interval");
+        GLASS_ON.with(|on| on.set(false));
     }
 }

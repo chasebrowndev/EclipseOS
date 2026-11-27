@@ -53,6 +53,7 @@ use smithay::{
 use crate::effects::{FbMap, GlassPreset};
 use crate::glass_profile::{GlassProfile, Rebuild};
 use crate::gpu_timer::Span;
+use crate::stats::{self, Miss, Served};
 use ec_abyss_config::Blur;
 
 /// The offscreen chain is rendered in the same format the capture path uses.
@@ -247,6 +248,17 @@ pub struct BlurElement<T: Texture = GlesTexture> {
     packed: bool,
     /// An opaque window's bezel strips (see [`ring_strips`]), element-local.
     ring: Option<[Rectangle<i32, Physical>; 4]>,
+    /// The GPU span of this element's final draw, per mode ([`final_span`]).
+    span: Span,
+}
+
+/// The GPU span of a final draw for `mode` (see [`Span`]).
+fn final_span(mode: ec_abyss_config::BlurMode) -> Span {
+    match mode {
+        ec_abyss_config::BlurMode::Glass => Span::FinalGlass,
+        ec_abyss_config::BlurMode::Frost => Span::FinalFrost,
+        _ => Span::FinalBlur,
+    }
 }
 
 /// An empty uniform set (a slot that has drawn nothing yet).
@@ -376,6 +388,7 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             alpha,
             packed: false,
             ring: None,
+            span: Span::FinalBlur,
         }
     }
 
@@ -504,7 +517,7 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
             } else {
                 // The program and its uniforms go in by reference: the override
                 // path would take a fresh `Vec` of them per draw.
-                crate::gpu_timer::begin_in(frame, Span::Glass);
+                crate::gpu_timer::begin_in(frame, self.span);
                 let res = frame.render_texture_from_to(
                     &self.texture,
                     src,
@@ -520,7 +533,11 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
                 res
             }
         } else {
-            RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+            crate::gpu_timer::begin_in(frame, self.span);
+            let res =
+                RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
+            crate::gpu_timer::end_in(frame);
+            res
         };
         RING_DAMAGE.set(scratch);
         res
@@ -896,6 +913,8 @@ struct GroupBlur {
     last: u64,
     /// The store frame the group was last asked for.
     seen: u64,
+    /// The GPU span of its members' final draws (per mode, [`final_span`]).
+    span: Span,
 }
 
 /// A grouped surface's element bookkeeping (its backdrop is the group's).
@@ -1084,6 +1103,27 @@ fn region_dirty(
             shape.rects().iter().any(|b| invalidates(*b, radius, rects))
         }
         (None, None) => invalidates(region, radius, rects),
+    }
+}
+
+/// Why a backdrop unit was rebuilt: the first of these that applies (the order
+/// of [`Miss`]). `damaged` is whether damage behind it asked for the rebuild,
+/// before any throttle; without it the rebuild is a flush of held-back damage.
+fn miss_reason(first: bool, mode: bool, geometry: bool, margin: bool, kernel: bool, damaged: bool) -> Miss {
+    if first {
+        Miss::First
+    } else if mode {
+        Miss::Mode
+    } else if geometry {
+        Miss::Geometry
+    } else if margin {
+        Miss::Margin
+    } else if !damaged {
+        Miss::Defer
+    } else if kernel {
+        Miss::Kernel
+    } else {
+        Miss::Refraction
     }
 }
 
@@ -1291,6 +1331,8 @@ impl BlurStore {
         element.program = program;
         element.uniforms = Some(entry.look.clone());
         element.ring = strips;
+        element.span = final_span(blur.mode);
+        stats::note_surface();
         Some(element)
     }
 
@@ -1442,6 +1484,8 @@ impl BlurStore {
             element.commit = slot.commit;
             element.program = Some(program.clone());
             element.uniforms = Some(slot.look.clone());
+            element.span = final_span(blur.mode);
+            stats::note_surface();
             out.push(element);
         }
         self.pane_uniforms = uniforms;
@@ -1504,11 +1548,21 @@ impl BlurStore {
         // lands inside the region (or only the bezel's ring of it) grown by
         // the kernel radius.
         let strips = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
+        // `--stats` only: whether the kernel alone (no refraction reach) also
+        // reaches the damage, which tells the two miss reasons apart.
+        let instr = stats::glass_on();
+        let mut kernel_hit = false;
         let dirty = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             let radius = kernel_radius(blur).saturating_add(reach.max(0));
             match damage {
-                Some(rects) => region_dirty(region, strips.as_ref(), shape, radius, rects),
+                Some(rects) => {
+                    let dirty = region_dirty(region, strips.as_ref(), shape, radius, rects);
+                    if dirty && instr {
+                        kernel_hit = region_dirty(region, strips.as_ref(), shape, kernel_radius(blur), rects);
+                    }
+                    dirty
+                }
                 // smithay returns `None` when there is no damage at all (an
                 // empty damage set), not "everything changed": the only reason
                 // left to rebuild is a backdrop that was never built.
@@ -1521,15 +1575,22 @@ impl BlurStore {
         let crowded = self.live.max(self.surfaces.len()) > CROWDED;
         let frame = self.frame;
         let entry = self.surfaces.get_mut(key)?;
+        let damaged = dirty;
         let mut dirty = dirty || entry.pending;
         let clamp_tex = region_in_tex(region, fb);
         let fresh = entry.result.is_none()
             || entry.crop != Some(crop)
             || entry.clamp != Some(clamp_tex)
             || entry.variant != (passes, sharp);
+        // Why a rebuild happens, for the counters (see [`Miss`] for the order).
+        let first = entry.result.is_none();
+        let mode = !first && entry.variant != (passes, sharp);
+        let geometry = !first && (entry.crop != Some(crop) || entry.clamp != Some(clamp_tex));
+        let mut held = false;
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
             dirty = false;
+            held = true;
         }
         // A crowd of new surfaces (a workspace opening) builds a few backdrops
         // a frame; the rest show unblurred until their turn.
@@ -1562,6 +1623,12 @@ impl BlurStore {
             entry.clamp = Some(clamp_tex);
             entry.variant = (passes, sharp);
             entry.commit.increment();
+            if instr {
+                let reason = miss_reason(first, mode, geometry, false, kernel_hit, damaged);
+                stats::note_backdrop(Served::Miss(reason));
+            }
+        } else if instr {
+            stats::note_backdrop(if held { Served::Held } else { Served::Hit });
         }
         Some((crop, strips, sharp))
     }
@@ -1632,10 +1699,15 @@ impl BlurStore {
             pending: false,
             last: 0,
             seen: frame,
+            span: final_span(blur.mode),
         });
         entry.seen = frame;
+        entry.span = final_span(blur.mode);
         // One scan for the whole group; each member tests its own region.
-        let dirty = {
+        // `--stats` only: whether the margin, and the kernel alone (no
+        // refraction reach), account for the damage.
+        let instr = stats::glass_on();
+        let (dirty, margin_hit, kernel_hit) = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             match damage {
                 Some(rects) => {
@@ -1647,24 +1719,30 @@ impl BlurStore {
                             .iter()
                             .any(|d| built.overlaps(*d) && !crops().any(|c| c.contains_rect(*d)))
                     });
-                    margin
-                        || members.clone().any(|m| {
+                    let reached = |with_reach: bool| {
+                        members.clone().any(|m| {
                             let strips = m
                                 .ring
                                 .map(|(inner, corner, bar)| ring_strips(m.region.size, inner, corner, bar));
-                            let radius = kernel_radius(blur).saturating_add(m.reach.max(0));
+                            let reach = if with_reach { m.reach.max(0) } else { 0 };
+                            let radius = kernel_radius(blur).saturating_add(reach);
                             region_dirty(m.region, strips.as_ref(), m.shape, radius, rects)
                         })
+                    };
+                    let dirty = margin || reached(true);
+                    let kernel = instr && dirty && !margin && reached(false);
+                    (dirty, margin, kernel)
                 }
                 // `None` is no damage at all: only a never-built backdrop
                 // is a reason left to rebuild.
-                None => entry.result.is_none(),
+                None => (entry.result.is_none(), false, false),
             }
         };
         let same_members = entry.members.len() == members.clone().count()
             && entry.members.iter().zip(members.clone()).all(|(a, m)| a == m.key);
         let crowded = self.live > CROWDED;
         let entry = self.groups.get_mut(key)?;
+        let damaged = dirty;
         let mut dirty = dirty || entry.pending;
         let fresh = tier_fresh(
             entry.result.is_some(),
@@ -1674,10 +1752,17 @@ impl BlurStore {
             params,
             same_members,
         ) || entry.clamp != Some(clamp_tex);
+        // Why a rebuild happens, for the counters (see [`Miss`] for the order).
+        let first = entry.result.is_none();
+        let mode = !first && entry.params != params;
+        let geometry =
+            !first && (!covers(entry.crop, needed) || entry.clamp != Some(clamp_tex) || !same_members);
         // Same throttle as a surface's, but the unit is the group's rebuild.
+        let mut held = false;
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
             dirty = false;
+            held = true;
         }
         if crowded && entry.result.is_none() {
             if self.started >= CROWDED_STARTS {
@@ -1720,6 +1805,18 @@ impl BlurStore {
             if changed {
                 entry.rebuilds = entry.rebuilds.wrapping_add(1);
             }
+            if instr {
+                let served = if changed {
+                    Served::Miss(miss_reason(
+                        first, mode, geometry, margin_hit, kernel_hit, damaged,
+                    ))
+                } else {
+                    Served::Idle
+                };
+                stats::note_backdrop(served);
+            }
+        } else if instr {
+            stats::note_backdrop(if held { Served::Held } else { Served::Hit });
         }
         Some(())
     }
@@ -1813,6 +1910,7 @@ impl BlurStore {
         let crop = g.crop?;
         let packed = g.params.2;
         let rebuilds = g.rebuilds;
+        let span = g.span;
         let slot = self.members.entry(key.clone()).or_insert_with(|| MemberSlot {
             id: Id::new(),
             look: no_uniforms(),
@@ -1850,6 +1948,8 @@ impl BlurStore {
         element.program = program;
         element.uniforms = Some(slot.look.clone());
         element.ring = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
+        element.span = span;
+        stats::note_surface();
         Some(element)
     }
 
@@ -2060,9 +2160,10 @@ where
     {
         let cropped = crop_behind(behind, scale, crop);
         let mut fb = Bind::bind(renderer, level0)?;
-        backdrop
-            .render_output(renderer, &mut fb, 0, &cropped, CLEAR)
-            .map_err(|_| GlesError::UnknownPixelFormat)?;
+        crate::gpu_timer::begin(renderer, Span::Backdrop);
+        let res = backdrop.render_output(renderer, &mut fb, 0, &cropped, CLEAR);
+        crate::gpu_timer::end(renderer);
+        res.map_err(|_| GlesError::UnknownPixelFormat)?;
     }
 
     let offset = sample_offset(blur);
@@ -2073,48 +2174,38 @@ where
         (tex.loc.x as f64, tex.loc.y as f64).into(),
         (tex.size.w as f64, tex.size.h as f64).into(),
     );
-    blit_full(
-        renderer,
-        level0,
-        &mut mid[0],
-        Some(down),
-        offset,
-        Transform::Normal,
-        Some(tex),
-        clamp.level0,
-    )?;
-    for level in 1..passes {
-        let (src, dst) = split_pair(mid, level - 1, level);
+    timed(renderer, Span::Down, |renderer| -> Result<(), GlesError> {
         blit_full(
             renderer,
-            src,
-            dst,
+            level0,
+            &mut mid[0],
             Some(down),
             offset,
             Transform::Normal,
-            None,
-            clamp.levels,
+            Some(tex),
+            clamp.level0,
         )?;
-    }
+        for level in 1..passes {
+            let (src, dst) = split_pair(mid, level - 1, level);
+            blit_full(
+                renderer,
+                src,
+                dst,
+                Some(down),
+                offset,
+                Transform::Normal,
+                None,
+                clamp.levels,
+            )?;
+        }
+        Ok(())
+    })?;
 
     // 3. Upsample down to level 2. The last step writes level 1 (half size)
     //    into the per-window result texture so the element can hold it while
     //    the chain is reused for the next window; the element stretches it to
     //    the region with bilinear filtering. One pass has no level 2: level 1
     //    is copied as is.
-    for level in (2..passes).rev() {
-        let (src, dst) = split_pair(mid, level, level - 1);
-        blit_full(
-            renderer,
-            src,
-            dst,
-            Some(up),
-            offset,
-            Transform::Normal,
-            None,
-            clamp.levels,
-        )?;
-    }
     // The result is upright: a quarter turn swaps the framebuffer's extent.
     let half = orient.transform_size(mid[0].size());
     // Packed (lens and regular glass): twice as wide, the lightly blurred level 1
@@ -2127,49 +2218,66 @@ where
     let mut result = sized(renderer, reuse, wide)?;
     let left = Rectangle::<i32, Physical>::from_size((half.w, half.h).into());
     let all = [left];
-    if passes >= 2 {
-        let src = mid[1].clone();
-        blit_to(
-            renderer,
-            &src,
-            &mut result,
-            Some(up),
-            offset,
-            orient,
-            None,
-            left,
-            &all,
-            clamp.levels,
-        )?;
-    } else {
-        let src = mid[0].clone();
-        blit_to(
-            renderer,
-            &src,
-            &mut result,
-            None,
-            offset,
-            orient,
-            None,
-            left,
-            &all,
-            clamp.levels,
-        )?;
-    }
+    timed(renderer, Span::Up, |renderer| -> Result<(), GlesError> {
+        for level in (2..passes).rev() {
+            let (src, dst) = split_pair(mid, level, level - 1);
+            blit_full(
+                renderer,
+                src,
+                dst,
+                Some(up),
+                offset,
+                Transform::Normal,
+                None,
+                clamp.levels,
+            )?;
+        }
+        if passes >= 2 {
+            let src = mid[1].clone();
+            blit_to(
+                renderer,
+                &src,
+                &mut result,
+                Some(up),
+                offset,
+                orient,
+                None,
+                left,
+                &all,
+                clamp.levels,
+            )
+        } else {
+            let src = mid[0].clone();
+            blit_to(
+                renderer,
+                &src,
+                &mut result,
+                None,
+                offset,
+                orient,
+                None,
+                left,
+                &all,
+                clamp.levels,
+            )
+        }
+    })?;
     if sharp {
         let right = Rectangle::new((half.w, 0).into(), left.size);
-        blit_to(
-            renderer,
-            &mid[0],
-            &mut result,
-            None,
-            offset,
-            orient,
-            None,
-            right,
-            &all,
-            clamp.levels,
-        )?;
+        timed(renderer, Span::Pack, |renderer| {
+            blit_to(
+                renderer,
+                &mid[0],
+                &mut result,
+                None,
+                offset,
+                orient,
+                None,
+                right,
+                &all,
+                clamp.levels,
+            )
+        })?;
     }
     // Down passes, up passes (levels `passes..=2`), then the final write.
     let ran = passes + passes.saturating_sub(2) + 1 + usize::from(sharp);
@@ -3967,5 +4075,50 @@ mod tests {
         let (tex, crop) = crop_rects(r(0, 0, 400, 30), 8, fb, 1, true).unwrap();
         assert_eq!(crop.loc.y, 0);
         assert_eq!(tex.loc.y + tex.size.h, 1080);
+    }
+
+    #[test]
+    fn a_rebuild_is_blamed_on_its_first_cause() {
+        // (first, mode, geometry, margin, kernel, damaged), most to least specific.
+        assert_eq!(miss_reason(true, true, true, true, true, true), Miss::First);
+        assert_eq!(miss_reason(false, true, true, true, true, true), Miss::Mode);
+        assert_eq!(miss_reason(false, false, true, true, true, true), Miss::Geometry);
+        assert_eq!(miss_reason(false, false, false, true, true, true), Miss::Margin);
+        assert_eq!(miss_reason(false, false, false, false, true, true), Miss::Kernel);
+        assert_eq!(
+            miss_reason(false, false, false, false, false, true),
+            Miss::Refraction
+        );
+        // Only a throttled flush: nothing new behind it.
+        assert_eq!(miss_reason(false, false, false, false, false, false), Miss::Defer);
+    }
+
+    /// Damage just inside a member's reach (kernel plus refraction) forces a
+    /// rebuild; just outside it does not. Without the refraction term the same
+    /// strip is outside the reach.
+    #[test]
+    fn damage_just_inside_reach_forces_a_rebuild_and_just_outside_does_not() {
+        let blur = blur(8, 4);
+        let kernel = kernel_radius(&blur);
+        assert_eq!(kernel, 128);
+        let region = r(500, 500, 200, 200);
+        let reach = 20;
+        let radius = kernel + reach;
+        // The sampled area starts at `region.x - radius`; its edge is exclusive.
+        let edge = region.loc.x - radius;
+        let outside = [r(edge - 12, 600, 12, 10)];
+        let inside = [r(edge - 12, 600, 13, 10)];
+        assert!(
+            !region_dirty(region, None, None, radius, &outside),
+            "outside the reach"
+        );
+        assert!(
+            region_dirty(region, None, None, radius, &inside),
+            "inside the reach"
+        );
+        assert!(
+            !region_dirty(region, None, None, kernel, &inside),
+            "no refraction reach"
+        );
     }
 }
